@@ -39,10 +39,34 @@ class ServiceManager:
 
     def _assert_service_layout(self, service_path: Path) -> None:
         if not (service_path / "main.py").exists() or not (service_path / "requirements.txt").exists():
+            entries = [entry.name for entry in service_path.iterdir()]
             raise HTTPException(
                 status_code=400,
-                detail="Service package must contain requirements.txt and main.py at root",
+                detail=f"Service package must contain requirements.txt and main.py at root. Found: {entries}",
             )
+
+    def _normalize_single_nested_root(self, destination: Path, logs: list[str]) -> None:
+        if (destination / "main.py").exists() and (destination / "requirements.txt").exists():
+            return
+
+        children = [child for child in destination.iterdir() if child.name != "__MACOSX"]
+        if len(children) != 1 or not children[0].is_dir():
+            return
+
+        nested_root = children[0]
+        if not (nested_root / "main.py").exists() or not (nested_root / "requirements.txt").exists():
+            return
+
+        logs.append(f"Detected single nested root '{nested_root.name}', flattening into service root.")
+        for item in nested_root.iterdir():
+            target = destination / item.name
+            if target.exists():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot flatten nested root because '{item.name}' already exists at root",
+                )
+            shutil.move(str(item), str(target))
+        nested_root.rmdir()
 
     def extract_archive(self, archive_path: Path, destination: Path) -> list[str]:
         logs: list[str] = []
@@ -57,6 +81,7 @@ class ServiceManager:
                 archive.extractall(path=destination)
         else:
             raise HTTPException(status_code=400, detail="Only .zip and .7z files are supported")
+        self._normalize_single_nested_root(destination, logs)
         self._assert_service_layout(destination)
         logs.append(f"Extracted to: {destination}")
         logs.append("Validated service root files: main.py and requirements.txt")
