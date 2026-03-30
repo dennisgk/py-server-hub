@@ -148,6 +148,17 @@ async def upload_service(
 
         setup_logs.extend(service_manager.extract_archive(tmp_file_path, destination))
         setup_logs.extend(service_manager.create_venv_and_install(destination))
+    except HTTPException as exc:
+        if destination.exists():
+            shutil.rmtree(destination, ignore_errors=True)
+        detail = exc.detail
+        if isinstance(detail, dict):
+            detail_logs = detail.get("setup_logs")
+            merged_logs = setup_logs + (detail_logs if isinstance(detail_logs, list) else [])
+            detail["setup_logs"] = merged_logs
+        else:
+            detail = {"message": str(detail), "setup_logs": setup_logs}
+        raise HTTPException(status_code=exc.status_code, detail=detail) from exc
     except Exception as exc:
         if destination.exists():
             shutil.rmtree(destination, ignore_errors=True)

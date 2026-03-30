@@ -19,6 +19,23 @@ export function CreateServicePage() {
 
   const namePlaceholder = useMemo(() => (file ? guessName(file.name) : ""), [file]);
 
+  const normalizeError = (detail: unknown): { message: string; setupLogs: string[] } => {
+    if (typeof detail === "string") {
+      return { message: detail, setupLogs: [] };
+    }
+    if (Array.isArray(detail)) {
+      return { message: JSON.stringify(detail), setupLogs: [] };
+    }
+    if (detail && typeof detail === "object") {
+      const detailObject = detail as { message?: string; setup_logs?: string[] };
+      return {
+        message: detailObject.message ?? JSON.stringify(detailObject),
+        setupLogs: Array.isArray(detailObject.setup_logs) ? detailObject.setup_logs : [],
+      };
+    }
+    return { message: "Upload failed.", setupLogs: [] };
+  };
+
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!file) {
@@ -35,17 +52,11 @@ export function CreateServicePage() {
       setCreatedServiceId(service.id);
     } catch (errorValue: unknown) {
       const detail = (errorValue as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
-      if (typeof detail === "string") {
-        setError(detail);
-      } else if (detail && typeof detail === "object") {
-        const detailObject = detail as { message?: string; setup_logs?: string[] };
-        if (Array.isArray(detailObject.setup_logs)) {
-          setUploadLogs(detailObject.setup_logs);
-        }
-        setError(detailObject.message ?? "Upload failed.");
-      } else {
-        setError("Upload failed. Ensure the archive root has requirements.txt and main.py.");
+      const normalized = normalizeError(detail);
+      if (normalized.setupLogs.length > 0) {
+        setUploadLogs(normalized.setupLogs);
       }
+      setError(normalized.message);
     } finally {
       setLoading(false);
     }

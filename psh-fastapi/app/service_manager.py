@@ -11,7 +11,7 @@ from pathlib import Path
 import py7zr
 from fastapi import HTTPException
 
-from .config import LOGS_DIR, SERVICES_DIR
+from .config import LOGS_DIR, SERVICES_DIR, UPLOAD_COMMAND_TIMEOUT_SECONDS
 from .db import get_db, utcnow_iso
 
 
@@ -90,7 +90,26 @@ class ServiceManager:
     def _run_logged(self, command: list[str], cwd: Path, logs: list[str]) -> None:
         command_display = " ".join(command)
         logs.append(f"$ {command_display}")
-        completed = subprocess.run(command, cwd=cwd, text=True, capture_output=True)
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=cwd,
+                text=True,
+                capture_output=True,
+                timeout=UPLOAD_COMMAND_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            logs.append(
+                f"Command timed out after {UPLOAD_COMMAND_TIMEOUT_SECONDS}s: {command_display}",
+            )
+            if exc.stdout:
+                logs.append(str(exc.stdout).strip())
+            if exc.stderr:
+                logs.append(str(exc.stderr).strip())
+            raise RuntimeError(
+                f"Command timed out after {UPLOAD_COMMAND_TIMEOUT_SECONDS}s: {command_display}",
+            ) from exc
+
         if completed.stdout.strip():
             logs.append(completed.stdout.strip())
         if completed.stderr.strip():

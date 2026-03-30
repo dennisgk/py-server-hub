@@ -15,6 +15,7 @@ JWT_SECRET = os.getenv("PSH_JWT_SECRET", "replace-this-in-production")
 JWT_EXPIRE_MINUTES = int(os.getenv("PSH_JWT_EXPIRE_MINUTES", "480"))
 DEFAULT_USERNAME = os.getenv("PSH_DEFAULT_USERNAME", "admin")
 DEFAULT_PASSWORD = os.getenv("PSH_DEFAULT_PASSWORD", "admin123!")
+UPLOAD_COMMAND_TIMEOUT_SECONDS = int(os.getenv("PSH_UPLOAD_COMMAND_TIMEOUT_SECONDS", "900"))
 
 
 def ensure_dirs() -> None:
