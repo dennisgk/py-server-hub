@@ -44,7 +44,9 @@ class ServiceManager:
                 detail="Service package must contain requirements.txt and main.py at root",
             )
 
-    def extract_archive(self, archive_path: Path, destination: Path) -> None:
+    def extract_archive(self, archive_path: Path, destination: Path) -> list[str]:
+        logs: list[str] = []
+        logs.append(f"Extracting archive: {archive_path.name}")
         destination.mkdir(parents=True, exist_ok=False)
         suffix = archive_path.suffix.lower()
         if suffix == ".zip":
@@ -56,24 +58,46 @@ class ServiceManager:
         else:
             raise HTTPException(status_code=400, detail="Only .zip and .7z files are supported")
         self._assert_service_layout(destination)
+        logs.append(f"Extracted to: {destination}")
+        logs.append("Validated service root files: main.py and requirements.txt")
+        return logs
 
-    def create_venv_and_install(self, service_path: Path) -> None:
+    def _run_logged(self, command: list[str], cwd: Path, logs: list[str]) -> None:
+        command_display = " ".join(command)
+        logs.append(f"$ {command_display}")
+        completed = subprocess.run(command, cwd=cwd, text=True, capture_output=True)
+        if completed.stdout.strip():
+            logs.append(completed.stdout.strip())
+        if completed.stderr.strip():
+            logs.append(completed.stderr.strip())
+        if completed.returncode != 0:
+            raise RuntimeError(f"Command failed ({completed.returncode}): {command_display}")
+
+    def create_venv_and_install(self, service_path: Path) -> list[str]:
+        logs: list[str] = []
         venv_path = service_path / ".venv"
         python_in_venv = self._resolve_venv_python(service_path)
 
         if not python_in_venv.exists():
-            subprocess.run([sys.executable, "-m", "venv", str(venv_path)], cwd=service_path, check=True)
+            logs.append("Creating service virtual environment...")
+            self._run_logged([sys.executable, "-m", "venv", str(venv_path)], service_path, logs)
+        else:
+            logs.append("Virtual environment already exists; reusing.")
 
-        subprocess.run(
+        logs.append("Upgrading pip in service virtual environment...")
+        self._run_logged(
             [str(python_in_venv), "-m", "pip", "install", "--upgrade", "pip"],
-            cwd=service_path,
-            check=True,
+            service_path,
+            logs,
         )
-        subprocess.run(
+        logs.append("Installing requirements.txt...")
+        self._run_logged(
             [str(python_in_venv), "-m", "pip", "install", "-r", "requirements.txt"],
-            cwd=service_path,
-            check=True,
+            service_path,
+            logs,
         )
+        logs.append("Service setup complete.")
+        return logs
 
     def _stream_reader(self, stream, file_obj) -> None:
         try:

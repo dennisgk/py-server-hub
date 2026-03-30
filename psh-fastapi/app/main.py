@@ -32,6 +32,7 @@ from .schemas import (
     ServiceLogsResponse,
     ServiceResponse,
     TokenCreateRequest,
+    UploadServiceResponse,
 )
 from .service_manager import ServiceManager
 
@@ -110,7 +111,7 @@ def list_services(_=Depends(get_service_actor)):
     return [ServiceResponse(**dict(row)) for row in rows]
 
 
-@app.post("/api/services/upload", response_model=ServiceResponse)
+@app.post("/api/services/upload", response_model=UploadServiceResponse)
 async def upload_service(
     file: UploadFile = File(...),
     name: str | None = Form(default=None),
@@ -136,18 +137,27 @@ async def upload_service(
     destination = SERVICES_DIR / folder_slug
 
     tmp_file_path: Path | None = None
+    setup_logs: list[str] = []
     try:
+        setup_logs.append(f"Receiving upload: {filename}")
         with NamedTemporaryFile(delete=False, suffix=archive_suffix, dir=TMP_DIR) as temp_handle:
             content = await file.read()
             temp_handle.write(content)
             tmp_file_path = Path(temp_handle.name)
+        setup_logs.append(f"Saved temporary file: {tmp_file_path}")
 
-        service_manager.extract_archive(tmp_file_path, destination)
-        service_manager.create_venv_and_install(destination)
+        setup_logs.extend(service_manager.extract_archive(tmp_file_path, destination))
+        setup_logs.extend(service_manager.create_venv_and_install(destination))
     except Exception as exc:
         if destination.exists():
             shutil.rmtree(destination, ignore_errors=True)
-        raise HTTPException(status_code=400, detail=f"Upload failed: {exc}") from exc
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": f"Upload failed: {exc}",
+                "setup_logs": setup_logs,
+            },
+        ) from exc
     finally:
         await file.close()
         if tmp_file_path and tmp_file_path.exists():
@@ -163,7 +173,7 @@ async def upload_service(
             (service_name, folder_slug, filename, "stopped", now, now),
         )
         row = conn.execute("SELECT * FROM services WHERE id = ?", (cursor.lastrowid,)).fetchone()
-    return ServiceResponse(**dict(row))
+    return UploadServiceResponse(**dict(row), setup_logs=setup_logs)
 
 
 def _load_service(service_id: int) -> dict:

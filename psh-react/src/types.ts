@@ -14,6 +14,10 @@ export type Service = {
   updated_at: string;
 };
 
+export type UploadServiceResult = Service & {
+  setup_logs: string[];
+};
+
 export type ServiceLogs = {
   stdout: string[];
   stderr: string[];

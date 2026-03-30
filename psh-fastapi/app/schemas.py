@@ -45,6 +45,10 @@ class ServiceResponse(BaseModel):
     updated_at: str
 
 
+class UploadServiceResponse(ServiceResponse):
+    setup_logs: list[str]
+
+
 class ServiceLogsResponse(BaseModel):
     stdout: list[str]
     stderr: list[str]

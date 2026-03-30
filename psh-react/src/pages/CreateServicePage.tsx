@@ -14,6 +14,8 @@ export function CreateServicePage() {
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [uploadLogs, setUploadLogs] = useState<string[]>([]);
+  const [createdServiceId, setCreatedServiceId] = useState<number | null>(null);
 
   const namePlaceholder = useMemo(() => (file ? guessName(file.name) : ""), [file]);
 
@@ -23,13 +25,27 @@ export function CreateServicePage() {
       setError("Please select a .zip or .7z file.");
       return;
     }
+    setCreatedServiceId(null);
     setLoading(true);
     setError(null);
+    setUploadLogs([`Starting upload: ${file.name}`]);
     try {
       const service = await uploadService(file, name || namePlaceholder);
-      navigate(`/services/${service.id}`);
-    } catch {
-      setError("Upload failed. Ensure the archive root has requirements.txt and main.py.");
+      setUploadLogs(service.setup_logs);
+      setCreatedServiceId(service.id);
+    } catch (errorValue: unknown) {
+      const detail = (errorValue as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      if (typeof detail === "string") {
+        setError(detail);
+      } else if (detail && typeof detail === "object") {
+        const detailObject = detail as { message?: string; setup_logs?: string[] };
+        if (Array.isArray(detailObject.setup_logs)) {
+          setUploadLogs(detailObject.setup_logs);
+        }
+        setError(detailObject.message ?? "Upload failed.");
+      } else {
+        setError("Upload failed. Ensure the archive root has requirements.txt and main.py.");
+      }
     } finally {
       setLoading(false);
     }
@@ -68,7 +84,24 @@ export function CreateServicePage() {
           <Button type="submit" disabled={loading}>
             {loading ? "Uploading..." : "Upload Service"}
           </Button>
+          {createdServiceId && (
+            <Button
+              type="button"
+              variant="success"
+              className="ms-2"
+              onClick={() => navigate(`/services/${createdServiceId}`)}
+            >
+              Open Service
+            </Button>
+          )}
         </Form>
+        {uploadLogs.length > 0 && (
+          <>
+            <hr />
+            <Card.Subtitle className="mb-2">Setup Output</Card.Subtitle>
+            <pre className="log-pane">{uploadLogs.join("\n")}</pre>
+          </>
+        )}
       </Card.Body>
     </Card>
   );

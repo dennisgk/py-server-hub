@@ -1,5 +1,5 @@
 import axios from "axios";
-import type { ApiToken, ApiTokenCreate, Service, ServiceLogs, User } from "./types";
+import type { ApiToken, ApiTokenCreate, Service, ServiceLogs, UploadServiceResult, User } from "./types";
 
 const API_BASE = "/api";
 
@@ -62,13 +62,13 @@ export async function removeService(serviceId: number): Promise<void> {
   await client.delete(`/services/${serviceId}`);
 }
 
-export async function uploadService(file: File, name?: string): Promise<Service> {
+export async function uploadService(file: File, name?: string): Promise<UploadServiceResult> {
   const formData = new FormData();
   formData.append("file", file);
   if (name) {
     formData.append("name", name);
   }
-  const response = await client.post<Service>("/services/upload", formData, {
+  const response = await client.post<UploadServiceResult>("/services/upload", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;
