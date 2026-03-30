@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Alert, Button, Card, Form } from "react-bootstrap";
 import { useNavigate } from "react-router-dom";
-import { uploadService } from "../api";
+import { fetchUploadJobStatus, getAuthToken, startUploadService } from "../api";
 
 function guessName(filename: string): string {
   return filename.replace(/\.(zip|7z)$/i, "");
@@ -16,8 +16,19 @@ export function CreateServicePage() {
   const [error, setError] = useState<string | null>(null);
   const [uploadLogs, setUploadLogs] = useState<string[]>([]);
   const [createdServiceId, setCreatedServiceId] = useState<number | null>(null);
+  const streamRef = useRef<EventSource | null>(null);
 
   const namePlaceholder = useMemo(() => (file ? guessName(file.name) : ""), [file]);
+
+  useEffect(
+    () => () => {
+      if (streamRef.current) {
+        streamRef.current.close();
+        streamRef.current = null;
+      }
+    },
+    [],
+  );
 
   const normalizeError = (detail: unknown): { message: string; setupLogs: string[] } => {
     if (typeof detail === "string") {
@@ -45,11 +56,74 @@ export function CreateServicePage() {
     setCreatedServiceId(null);
     setLoading(true);
     setError(null);
+    if (streamRef.current) {
+      streamRef.current.close();
+      streamRef.current = null;
+    }
     setUploadLogs([`Starting upload: ${file.name}`]);
     try {
-      const service = await uploadService(file, name || namePlaceholder);
-      setUploadLogs(service.setup_logs);
-      setCreatedServiceId(service.id);
+      const uploadJob = await startUploadService(file, name || namePlaceholder);
+      const token = getAuthToken();
+      if (!token) {
+        throw new Error("Missing auth token for streaming logs.");
+      }
+      setUploadLogs((previous) => [...previous, `Upload job started: ${uploadJob.job_id}`]);
+      const streamUrl = `/api/services/upload-jobs/${uploadJob.job_id}/stream?token=${encodeURIComponent(token)}`;
+      const stream = new EventSource(streamUrl);
+      streamRef.current = stream;
+
+      stream.onmessage = (streamEvent) => {
+        try {
+          const payload = JSON.parse(streamEvent.data) as {
+            type: string;
+            line?: string;
+            status?: string;
+            error_message?: string | null;
+            service?: { id: number } | null;
+          };
+          if (payload.type === "log" && payload.line) {
+            setUploadLogs((previous) => [...previous, payload.line ?? ""]);
+            return;
+          }
+          if (payload.type === "done") {
+            stream.close();
+            streamRef.current = null;
+            setLoading(false);
+            if (payload.status === "completed" && payload.service?.id) {
+              setCreatedServiceId(payload.service.id);
+              setUploadLogs((previous) => [...previous, "Upload and setup completed."]);
+            } else {
+              setError(payload.error_message ?? "Upload failed.");
+            }
+          }
+        } catch {
+          setUploadLogs((previous) => [...previous, streamEvent.data]);
+        }
+      };
+
+      stream.onerror = async () => {
+        stream.close();
+        streamRef.current = null;
+        try {
+          const status = await fetchUploadJobStatus(uploadJob.job_id);
+          setUploadLogs(status.setup_logs);
+          if (status.status === "completed" && status.service?.id) {
+            setCreatedServiceId(status.service.id);
+            setLoading(false);
+            return;
+          }
+          if (status.status === "failed") {
+            setError(status.error_message ?? "Upload failed.");
+            setLoading(false);
+            return;
+          }
+          setError("Log stream disconnected before upload finished.");
+        } catch {
+          setError("Log stream disconnected and upload status could not be retrieved.");
+        } finally {
+          setLoading(false);
+        }
+      };
     } catch (errorValue: unknown) {
       const detail = (errorValue as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
       const normalized = normalizeError(detail);
@@ -57,7 +131,6 @@ export function CreateServicePage() {
         setUploadLogs(normalized.setupLogs);
       }
       setError(normalized.message);
-    } finally {
       setLoading(false);
     }
   };

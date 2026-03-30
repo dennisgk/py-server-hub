@@ -14,8 +14,16 @@ export type Service = {
   updated_at: string;
 };
 
-export type UploadServiceResult = Service & {
+export type UploadJobStart = {
+  job_id: string;
+};
+
+export type UploadJobStatus = {
+  job_id: string;
+  status: "queued" | "running" | "completed" | "failed";
   setup_logs: string[];
+  error_message: string | null;
+  service: Service | null;
 };
 
 export type ServiceLogs = {

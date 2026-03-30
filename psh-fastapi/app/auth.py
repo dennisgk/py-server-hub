@@ -97,13 +97,7 @@ def authenticate_user(username: str, password: str):
         return {"id": row["id"], "username": row["username"]}
 
 
-def get_user_from_bearer(authorization: str | None) -> dict:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing bearer token",
-        )
-    token = authorization.split(" ", 1)[1].strip()
+def get_user_from_token(token: str) -> dict:
     payload = decode_jwt(token)
     jti = payload.get("jti")
     subject = payload.get("sub")
@@ -137,6 +131,16 @@ def get_user_from_bearer(authorization: str | None) -> dict:
             detail="Unknown user",
         )
     return {"id": user["id"], "username": user["username"], "token": token, "jti": jti}
+
+
+def get_user_from_bearer(authorization: str | None) -> dict:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing bearer token",
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    return get_user_from_token(token)
 
 
 def revoke_jwt(jti: str, user_id: int) -> None:

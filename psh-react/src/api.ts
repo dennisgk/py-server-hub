@@ -1,5 +1,5 @@
 import axios from "axios";
-import type { ApiToken, ApiTokenCreate, Service, ServiceLogs, UploadServiceResult, User } from "./types";
+import type { ApiToken, ApiTokenCreate, Service, ServiceLogs, UploadJobStart, UploadJobStatus, User } from "./types";
 
 const API_BASE = "/api";
 
@@ -7,6 +7,10 @@ let jwtToken: string | null = null;
 
 export function setAuthToken(token: string | null) {
   jwtToken = token;
+}
+
+export function getAuthToken() {
+  return jwtToken;
 }
 
 const client = axios.create({
@@ -62,15 +66,20 @@ export async function removeService(serviceId: number): Promise<void> {
   await client.delete(`/services/${serviceId}`);
 }
 
-export async function uploadService(file: File, name?: string): Promise<UploadServiceResult> {
+export async function startUploadService(file: File, name?: string): Promise<UploadJobStart> {
   const formData = new FormData();
   formData.append("file", file);
   if (name) {
     formData.append("name", name);
   }
-  const response = await client.post<UploadServiceResult>("/services/upload", formData, {
+  const response = await client.post<UploadJobStart>("/services/upload", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
+  return response.data;
+}
+
+export async function fetchUploadJobStatus(jobId: string): Promise<UploadJobStatus> {
+  const response = await client.get<UploadJobStatus>(`/services/upload-jobs/${jobId}`);
   return response.data;
 }
 

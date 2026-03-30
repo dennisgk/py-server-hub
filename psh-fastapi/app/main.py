@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 import re
-import shutil
+import json
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .auth import (
     authenticate_user,
     create_api_token,
     delete_api_token,
+    get_user_from_token,
     ensure_default_user,
     get_user_from_api_token,
     get_user_from_bearer,
@@ -22,7 +23,7 @@ from .auth import (
     revoke_jwt,
 )
 from .config import SERVICES_DIR, STATIC_DIR, TMP_DIR, ensure_dirs
-from .db import get_db, init_db, utcnow_iso
+from .db import get_db, init_db
 from .schemas import (
     ApiTokenCreateResponse,
     ApiTokenResponse,
@@ -32,7 +33,8 @@ from .schemas import (
     ServiceLogsResponse,
     ServiceResponse,
     TokenCreateRequest,
-    UploadServiceResponse,
+    UploadJobStartResponse,
+    UploadJobStatusResponse,
 )
 from .service_manager import ServiceManager
 
@@ -111,7 +113,7 @@ def list_services(_=Depends(get_service_actor)):
     return [ServiceResponse(**dict(row)) for row in rows]
 
 
-@app.post("/api/services/upload", response_model=UploadServiceResponse)
+@app.post("/api/services/upload", response_model=UploadJobStartResponse)
 async def upload_service(
     file: UploadFile = File(...),
     name: str | None = Form(default=None),
@@ -137,54 +139,89 @@ async def upload_service(
     destination = SERVICES_DIR / folder_slug
 
     tmp_file_path: Path | None = None
-    setup_logs: list[str] = []
     try:
-        setup_logs.append(f"Receiving upload: {filename}")
         with NamedTemporaryFile(delete=False, suffix=archive_suffix, dir=TMP_DIR) as temp_handle:
-            content = await file.read()
-            temp_handle.write(content)
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                temp_handle.write(chunk)
             tmp_file_path = Path(temp_handle.name)
-        setup_logs.append(f"Saved temporary file: {tmp_file_path}")
-
-        setup_logs.extend(service_manager.extract_archive(tmp_file_path, destination))
-        setup_logs.extend(service_manager.create_venv_and_install(destination))
-    except HTTPException as exc:
-        if destination.exists():
-            shutil.rmtree(destination, ignore_errors=True)
-        detail = exc.detail
-        if isinstance(detail, dict):
-            detail_logs = detail.get("setup_logs")
-            merged_logs = setup_logs + (detail_logs if isinstance(detail_logs, list) else [])
-            detail["setup_logs"] = merged_logs
-        else:
-            detail = {"message": str(detail), "setup_logs": setup_logs}
-        raise HTTPException(status_code=exc.status_code, detail=detail) from exc
+        job_id = service_manager.create_upload_job(
+            user_id=_["id"],
+            service_name=service_name,
+            folder_slug=folder_slug,
+            filename=filename,
+            tmp_file_path=tmp_file_path,
+        )
+        return UploadJobStartResponse(job_id=job_id)
     except Exception as exc:
-        if destination.exists():
-            shutil.rmtree(destination, ignore_errors=True)
+        if tmp_file_path and tmp_file_path.exists():
+            tmp_file_path.unlink(missing_ok=True)
         raise HTTPException(
             status_code=400,
-            detail={
-                "message": f"Upload failed: {exc}",
-                "setup_logs": setup_logs,
-            },
+            detail={"message": f"Upload failed before job start: {exc}", "setup_logs": []},
         ) from exc
     finally:
         await file.close()
-        if tmp_file_path and tmp_file_path.exists():
-            tmp_file_path.unlink(missing_ok=True)
 
-    now = utcnow_iso()
-    with get_db() as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO services (name, folder_name, archive_name, status, pid, created_at, updated_at)
-            VALUES (?, ?, ?, ?, NULL, ?, ?)
-            """,
-            (service_name, folder_slug, filename, "stopped", now, now),
-        )
-        row = conn.execute("SELECT * FROM services WHERE id = ?", (cursor.lastrowid,)).fetchone()
-    return UploadServiceResponse(**dict(row), setup_logs=setup_logs)
+
+@app.get("/api/services/upload-jobs/{job_id}", response_model=UploadJobStatusResponse)
+def get_upload_job_status(job_id: str, user=Depends(get_service_actor)):
+    job = service_manager.get_upload_job(job_id, user["id"])
+    service_payload = ServiceResponse(**job["service"]) if job["service"] else None
+    return UploadJobStatusResponse(
+        job_id=job["job_id"],
+        status=job["status"],
+        setup_logs=job["setup_logs"],
+        error_message=job["error_message"],
+        service=service_payload,
+    )
+
+
+def _get_stream_user(token: str | None, authorization: str | None):
+    if authorization and authorization.lower().startswith("bearer "):
+        return get_user_from_bearer(authorization)
+    if token:
+        return get_user_from_token(token)
+    raise HTTPException(status_code=401, detail="Missing auth token for stream")
+
+
+@app.get("/api/services/upload-jobs/{job_id}/stream")
+def stream_upload_job_logs(
+    job_id: str,
+    token: str | None = Query(default=None),
+    authorization: str | None = Header(default=None),
+):
+    user = _get_stream_user(token, authorization)
+
+    def event_stream():
+        last_index = 0
+        while True:
+            update = service_manager.wait_upload_job_update(
+                job_id=job_id,
+                user_id=user["id"],
+                last_index=last_index,
+                timeout_seconds=20,
+            )
+            for line in update["lines"]:
+                payload = {"type": "log", "line": line}
+                yield f"data: {json.dumps(payload)}\n\n"
+            last_index = update["next_index"]
+
+            if update["done"]:
+                payload = {
+                    "type": "done",
+                    "status": update["status"],
+                    "error_message": update["error_message"],
+                    "service": update["service"],
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
+                break
+
+            yield ": keepalive\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 def _load_service(service_id: int) -> dict:

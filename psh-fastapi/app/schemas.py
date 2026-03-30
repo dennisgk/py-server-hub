@@ -49,6 +49,18 @@ class UploadServiceResponse(ServiceResponse):
     setup_logs: list[str]
 
 
+class UploadJobStartResponse(BaseModel):
+    job_id: str
+
+
+class UploadJobStatusResponse(BaseModel):
+    job_id: str
+    status: str
+    setup_logs: list[str]
+    error_message: str | None = None
+    service: ServiceResponse | None = None
+
+
 class ServiceLogsResponse(BaseModel):
     stdout: list[str]
     stderr: list[str]

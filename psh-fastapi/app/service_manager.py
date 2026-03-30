@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import uuid
 import zipfile
 from collections import deque
 from pathlib import Path
@@ -22,6 +23,8 @@ class ServiceManager:
         self._stderr_files: dict[int, object] = {}
         self._threads: list[threading.Thread] = []
         self._lock = threading.Lock()
+        self._upload_jobs: dict[str, dict] = {}
+        self._upload_jobs_lock = threading.Lock()
 
     def service_dir(self, folder_name: str) -> Path:
         return SERVICES_DIR / folder_name
@@ -110,10 +113,12 @@ class ServiceManager:
                 f"Command timed out after {UPLOAD_COMMAND_TIMEOUT_SECONDS}s: {command_display}",
             ) from exc
 
-        if completed.stdout.strip():
-            logs.append(completed.stdout.strip())
-        if completed.stderr.strip():
-            logs.append(completed.stderr.strip())
+        if completed.stdout:
+            logs.append("----- stdout -----")
+            logs.extend(line for line in completed.stdout.splitlines() if line.strip() != "")
+        if completed.stderr:
+            logs.append("----- stderr -----")
+            logs.extend(line for line in completed.stderr.splitlines() if line.strip() != "")
         if completed.returncode != 0:
             raise RuntimeError(f"Command failed ({completed.returncode}): {command_display}")
 
@@ -130,13 +135,33 @@ class ServiceManager:
 
         logs.append("Upgrading pip in service virtual environment...")
         self._run_logged(
-            [str(python_in_venv), "-m", "pip", "install", "--upgrade", "pip"],
+            [
+                str(python_in_venv),
+                "-m",
+                "pip",
+                "install",
+                "--upgrade",
+                "--progress-bar",
+                "off",
+                "-v",
+                "pip",
+            ],
             service_path,
             logs,
         )
         logs.append("Installing requirements.txt...")
         self._run_logged(
-            [str(python_in_venv), "-m", "pip", "install", "-r", "requirements.txt"],
+            [
+                str(python_in_venv),
+                "-m",
+                "pip",
+                "install",
+                "--progress-bar",
+                "off",
+                "-v",
+                "-r",
+                "requirements.txt",
+            ],
             service_path,
             logs,
         )
@@ -281,3 +306,115 @@ class ServiceManager:
                 "UPDATE services SET status = ?, pid = ?, updated_at = ? WHERE id = ?",
                 updates,
             )
+
+    def _append_job_log(self, job: dict, line: str) -> None:
+        condition: threading.Condition = job["condition"]
+        with condition:
+            job["setup_logs"].append(line)
+            job["updated_at"] = utcnow_iso()
+            condition.notify_all()
+
+    def _set_job_terminal(self, job: dict, status: str, error_message: str | None = None, service: dict | None = None) -> None:
+        condition: threading.Condition = job["condition"]
+        with condition:
+            job["status"] = status
+            job["error_message"] = error_message
+            job["service"] = service
+            job["updated_at"] = utcnow_iso()
+            condition.notify_all()
+
+    def _run_upload_job(self, job_id: str, service_name: str, folder_slug: str, filename: str, tmp_file_path: Path) -> None:
+        with self._upload_jobs_lock:
+            job = self._upload_jobs[job_id]
+
+        self._append_job_log(job, f"Receiving upload: {filename}")
+        self._append_job_log(job, f"Saved temporary file: {tmp_file_path}")
+        job["status"] = "running"
+        destination = SERVICES_DIR / folder_slug
+
+        try:
+            for line in self.extract_archive(tmp_file_path, destination):
+                self._append_job_log(job, line)
+            for line in self.create_venv_and_install(destination):
+                self._append_job_log(job, line)
+
+            now = utcnow_iso()
+            with get_db() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO services (name, folder_name, archive_name, status, pid, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, NULL, ?, ?)
+                    """,
+                    (service_name, folder_slug, filename, "stopped", now, now),
+                )
+                row = conn.execute("SELECT * FROM services WHERE id = ?", (cursor.lastrowid,)).fetchone()
+            service = dict(row)
+            self._set_job_terminal(job, "completed", service=service)
+        except Exception as exc:
+            if destination.exists():
+                shutil.rmtree(destination, ignore_errors=True)
+            self._append_job_log(job, f"ERROR: {exc}")
+            self._set_job_terminal(job, "failed", error_message=f"Upload failed: {exc}")
+        finally:
+            tmp_file_path.unlink(missing_ok=True)
+
+    def create_upload_job(self, user_id: int, service_name: str, folder_slug: str, filename: str, tmp_file_path: Path) -> str:
+        job_id = str(uuid.uuid4())
+        job = {
+            "job_id": job_id,
+            "user_id": user_id,
+            "status": "queued",
+            "setup_logs": [],
+            "error_message": None,
+            "service": None,
+            "created_at": utcnow_iso(),
+            "updated_at": utcnow_iso(),
+            "condition": threading.Condition(),
+        }
+        with self._upload_jobs_lock:
+            self._upload_jobs[job_id] = job
+
+        thread = threading.Thread(
+            target=self._run_upload_job,
+            args=(job_id, service_name, folder_slug, filename, tmp_file_path),
+            daemon=True,
+        )
+        thread.start()
+        self._threads.append(thread)
+        return job_id
+
+    def get_upload_job(self, job_id: str, user_id: int) -> dict:
+        with self._upload_jobs_lock:
+            job = self._upload_jobs.get(job_id)
+        if not job or job["user_id"] != user_id:
+            raise HTTPException(status_code=404, detail="Upload job not found")
+        return {
+            "job_id": job["job_id"],
+            "status": job["status"],
+            "setup_logs": list(job["setup_logs"]),
+            "error_message": job["error_message"],
+            "service": job["service"],
+        }
+
+    def wait_upload_job_update(self, job_id: str, user_id: int, last_index: int, timeout_seconds: int = 20) -> dict:
+        with self._upload_jobs_lock:
+            job = self._upload_jobs.get(job_id)
+        if not job or job["user_id"] != user_id:
+            raise HTTPException(status_code=404, detail="Upload job not found")
+
+        condition: threading.Condition = job["condition"]
+        with condition:
+            if len(job["setup_logs"]) <= last_index and job["status"] not in {"completed", "failed"}:
+                condition.wait(timeout=timeout_seconds)
+
+            lines = job["setup_logs"][last_index:]
+            next_index = len(job["setup_logs"])
+            done = job["status"] in {"completed", "failed"}
+            return {
+                "lines": lines,
+                "next_index": next_index,
+                "done": done,
+                "status": job["status"],
+                "error_message": job["error_message"],
+                "service": job["service"],
+            }
