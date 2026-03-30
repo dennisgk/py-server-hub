@@ -71,9 +71,9 @@ class ServiceManager:
             shutil.move(str(item), str(target))
         nested_root.rmdir()
 
-    def extract_archive(self, archive_path: Path, destination: Path) -> list[str]:
+    def extract_archive(self, archive_path: Path, destination: Path, log_callback=None) -> list[str]:
         logs: list[str] = []
-        logs.append(f"Extracting archive: {archive_path.name}")
+        self._push_log(logs, f"Extracting archive: {archive_path.name}", log_callback)
         destination.mkdir(parents=True, exist_ok=False)
         suffix = archive_path.suffix.lower()
         if suffix == ".zip":
@@ -86,54 +86,63 @@ class ServiceManager:
             raise HTTPException(status_code=400, detail="Only .zip and .7z files are supported")
         self._normalize_single_nested_root(destination, logs)
         self._assert_service_layout(destination)
-        logs.append(f"Extracted to: {destination}")
-        logs.append("Validated service root files: main.py and requirements.txt")
+        self._push_log(logs, f"Extracted to: {destination}", log_callback)
+        self._push_log(logs, "Validated service root files: main.py and requirements.txt", log_callback)
         return logs
 
-    def _run_logged(self, command: list[str], cwd: Path, logs: list[str]) -> None:
+    def _run_logged(self, command: list[str], cwd: Path, logs: list[str], log_callback=None) -> None:
         command_display = " ".join(command)
-        logs.append(f"$ {command_display}")
+        self._push_log(logs, f"$ {command_display}", log_callback)
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+        )
+        self._push_log(logs, "----- output -----", log_callback)
+        collected_lines: list[str] = []
+        timed_out = False
+
         try:
-            completed = subprocess.run(
-                command,
-                cwd=cwd,
-                text=True,
-                capture_output=True,
-                timeout=UPLOAD_COMMAND_TIMEOUT_SECONDS,
-            )
+            assert process.stdout is not None
+            for line in iter(process.stdout.readline, ""):
+                cleaned = line.rstrip("\n")
+                if cleaned:
+                    self._push_log(logs, cleaned, log_callback)
+                    collected_lines.append(cleaned)
+            process.stdout.close()
+            process.wait(timeout=UPLOAD_COMMAND_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired as exc:
-            logs.append(
-                f"Command timed out after {UPLOAD_COMMAND_TIMEOUT_SECONDS}s: {command_display}",
-            )
-            if exc.stdout:
-                logs.append(str(exc.stdout).strip())
-            if exc.stderr:
-                logs.append(str(exc.stderr).strip())
+            timed_out = True
+            process.kill()
+            process.wait(timeout=5)
+            self._push_log(logs, f"Command timed out after {UPLOAD_COMMAND_TIMEOUT_SECONDS}s: {command_display}", log_callback)
             raise RuntimeError(
                 f"Command timed out after {UPLOAD_COMMAND_TIMEOUT_SECONDS}s: {command_display}",
             ) from exc
+        finally:
+            if process.stdout and not process.stdout.closed:
+                process.stdout.close()
 
-        if completed.stdout:
-            logs.append("----- stdout -----")
-            logs.extend(line for line in completed.stdout.splitlines() if line.strip() != "")
-        if completed.stderr:
-            logs.append("----- stderr -----")
-            logs.extend(line for line in completed.stderr.splitlines() if line.strip() != "")
-        if completed.returncode != 0:
-            raise RuntimeError(f"Command failed ({completed.returncode}): {command_display}")
+        if not timed_out and process.returncode != 0:
+            if not collected_lines:
+                self._push_log(logs, "(no output captured)", log_callback)
+            raise RuntimeError(f"Command failed ({process.returncode}): {command_display}")
 
-    def create_venv_and_install(self, service_path: Path) -> list[str]:
+    def create_venv_and_install(self, service_path: Path, log_callback=None) -> list[str]:
         logs: list[str] = []
         venv_path = service_path / ".venv"
         python_in_venv = self._resolve_venv_python(service_path)
 
         if not python_in_venv.exists():
-            logs.append("Creating service virtual environment...")
-            self._run_logged([sys.executable, "-m", "venv", str(venv_path)], service_path, logs)
+            self._push_log(logs, "Creating service virtual environment...", log_callback)
+            self._run_logged([sys.executable, "-m", "venv", str(venv_path)], service_path, logs, log_callback)
         else:
-            logs.append("Virtual environment already exists; reusing.")
+            self._push_log(logs, "Virtual environment already exists; reusing.", log_callback)
 
-        logs.append("Upgrading pip in service virtual environment...")
+        self._push_log(logs, "Upgrading pip in service virtual environment...", log_callback)
         self._run_logged(
             [
                 str(python_in_venv),
@@ -148,8 +157,9 @@ class ServiceManager:
             ],
             service_path,
             logs,
+            log_callback,
         )
-        logs.append("Installing requirements.txt...")
+        self._push_log(logs, "Installing requirements.txt...", log_callback)
         self._run_logged(
             [
                 str(python_in_venv),
@@ -164,8 +174,9 @@ class ServiceManager:
             ],
             service_path,
             logs,
+            log_callback,
         )
-        logs.append("Service setup complete.")
+        self._push_log(logs, "Service setup complete.", log_callback)
         return logs
 
     def _stream_reader(self, stream, file_obj) -> None:
@@ -333,10 +344,15 @@ class ServiceManager:
         destination = SERVICES_DIR / folder_slug
 
         try:
-            for line in self.extract_archive(tmp_file_path, destination):
-                self._append_job_log(job, line)
-            for line in self.create_venv_and_install(destination):
-                self._append_job_log(job, line)
+            self.extract_archive(
+                tmp_file_path,
+                destination,
+                log_callback=lambda line: self._append_job_log(job, line),
+            )
+            self.create_venv_and_install(
+                destination,
+                log_callback=lambda line: self._append_job_log(job, line),
+            )
 
             now = utcnow_iso()
             with get_db() as conn:
@@ -418,3 +434,7 @@ class ServiceManager:
                 "error_message": job["error_message"],
                 "service": job["service"],
             }
+    def _push_log(self, logs: list[str], line: str, log_callback=None) -> None:
+        logs.append(line)
+        if log_callback:
+            log_callback(line)
