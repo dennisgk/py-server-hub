@@ -19,12 +19,16 @@ services:
   nginx:
     container_name: psh-reverse-proxy
     image: nginx:1.27-alpine
+    environment:
+      PSH_PROTO_MODE: ${PSH_PROTO_MODE:-https}
+      NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx
+      NGINX_ENVSUBST_FILTER: PSH_PROTO_MODE
     depends_on:
       - psh
     ports:
       - "${PSH_PROXY_HTTP_PORT:-9000}:80"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx.conf.template:/etc/nginx/templates/nginx.conf.template:ro
     restart: unless-stopped
 
 volumes:

@@ -126,3 +126,8 @@ Remove stops it first, then deletes the service folder and related logs.
 - Hosts matching `^\d+psh\..+$` are routed to that port on the `psh` container.
   - Example: `1234psh.example.com` -> `psh:1234`
 - WebSocket upgrades are enabled in `psh-docker/nginx.conf`.
+- In double-proxy setups, configure `PSH_PROTO_MODE` in `psh-docker/.env`:
+  - `https` (default) forces `X-Forwarded-Proto: https` downstream.
+  - `forwarded` uses the incoming forwarded proto from the outer proxy.
+  - `http` forces `X-Forwarded-Proto: http`.
+  This is applied via `psh-docker/nginx.conf.template`.
