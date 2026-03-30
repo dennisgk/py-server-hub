@@ -20,6 +20,6 @@ COPY psh-fastapi/ ./
 RUN rm -rf ./static && mkdir -p ./static
 COPY --from=frontend_builder /build/psh-react/dist/ ./static/
 
-EXPOSE 8000
+EXPOSE 9000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9000"]

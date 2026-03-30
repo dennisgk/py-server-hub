@@ -11,10 +11,20 @@ services:
       PSH_DEFAULT_USERNAME: ${PSH_DEFAULT_USERNAME}
       PSH_DEFAULT_PASSWORD: ${PSH_DEFAULT_PASSWORD}
       PSH_JWT_EXPIRE_MINUTES: ${PSH_JWT_EXPIRE_MINUTES}
-    ports:
-      - "${PSH_HTTP_PORT:-8000}:8000"
+    expose:
+      - "9000"
     volumes:
       - psh_data:/app/psh-fastapi/data
+    restart: unless-stopped
+  nginx:
+    container_name: psh-reverse-proxy
+    image: nginx:1.27-alpine
+    depends_on:
+      - psh
+    ports:
+      - "${PSH_PROXY_HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
     restart: unless-stopped
 
 volumes:

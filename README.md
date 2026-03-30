@@ -15,7 +15,7 @@ Py Server Hub is a FastAPI + React project for managing uploaded Python service 
    - `.venv\Scripts\activate` (Windows) or `source .venv/bin/activate` (Linux/macOS)
    - `pip install -r requirements.txt`
    - Copy `.env.example` to `.env` and set values (especially `PSH_JWT_SECRET`).
-   - Run: `uvicorn app.main:app --reload --host 0.0.0.0 --port 8000`
+   - Run: `uvicorn app.main:app --reload --host 0.0.0.0 --port 9000`
 2. Frontend setup (dev mode):
    - `cd psh-react`
    - `npm install`
@@ -62,7 +62,7 @@ Create API tokens from UI page **API Tokens** (token value is shown once at crea
 ## Headless API token examples
 
 Assume:
-- `BASE=http://127.0.0.1:8000`
+- `BASE=http://127.0.0.1:9000`
 - `TOKEN=<your_api_token>`
 - `SERVICE_ID=1`
 
@@ -117,3 +117,12 @@ When a service archive is uploaded:
 
 Stop terminates the running process.  
 Remove stops it first, then deletes the service folder and related logs.
+
+## Docker reverse proxy routing
+
+`psh-docker/docker-compose.yml` includes an Nginx reverse proxy service.
+
+- Non-matching hosts route to main app (`psh:9000`) for UI/API.
+- Hosts matching `^\d+psh\..+$` are routed to that port on the `psh` container.
+  - Example: `1234psh.example.com` -> `psh:1234`
+- WebSocket upgrades are enabled in `psh-docker/nginx.conf`.
