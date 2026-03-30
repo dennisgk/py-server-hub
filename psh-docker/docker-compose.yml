@@ -1,0 +1,21 @@
+services:
+  psh:
+    container_name: psh-server-hub
+    build:
+      context: ..
+      dockerfile: psh-docker/Dockerfile
+    env_file:
+      - .env
+    environment:
+      PSH_JWT_SECRET: ${PSH_JWT_SECRET}
+      PSH_DEFAULT_USERNAME: ${PSH_DEFAULT_USERNAME}
+      PSH_DEFAULT_PASSWORD: ${PSH_DEFAULT_PASSWORD}
+      PSH_JWT_EXPIRE_MINUTES: ${PSH_JWT_EXPIRE_MINUTES}
+    ports:
+      - "${PSH_HTTP_PORT:-8000}:8000"
+    volumes:
+      - psh_data:/app/psh-fastapi/data
+    restart: unless-stopped
+
+volumes:
+  psh_data:

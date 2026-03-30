@@ -1,0 +1,5 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+pyjwt==2.10.1
+python-multipart==0.0.20
+py7zr==0.22.0
