@@ -1,0 +1,8 @@
+FROM nginx:1.27-alpine
+
+COPY nginx.conf.template /etc/nginx/nginx.conf.template
+COPY nginx-entrypoint.sh /usr/local/bin/psh-nginx-entrypoint.sh
+
+RUN chmod +x /usr/local/bin/psh-nginx-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/psh-nginx-entrypoint.sh"]
